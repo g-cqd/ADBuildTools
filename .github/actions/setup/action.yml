@@ -1,0 +1,19 @@
+name: "Setup Swift (g-cqd)"
+description: "Install the pinned Swift toolchain and check out the canonical ADBuildTools config."
+
+inputs:
+  swift-version:
+    description: "Swift toolchain version to install."
+    required: false
+    default: "6.3.2"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install Swift ${{ inputs.swift-version }}
+      uses: swift-actions/setup-swift@v2
+      with:
+        swift-version: ${{ inputs.swift-version }}
+    - name: Report toolchain
+      shell: bash
+      run: swift --version

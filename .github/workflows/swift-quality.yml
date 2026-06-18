@@ -1,0 +1,80 @@
+name: Swift Quality
+
+# Reusable workflow: the single CI definition for every g-cqd Swift package.
+# A consumer calls it from its own .github/workflows/ci.yml:
+#
+#   jobs:
+#     quality:
+#       uses: g-cqd/ADBuildTools/.github/workflows/swift-quality.yml@v1
+#       with:
+#         dev-env-var: ADF_DEV
+#
+# NOTE: action `uses:` are tag-pinned below for readability — pin them to commit SHAs before
+# relying on this in production (OWASP A03 supply-chain hygiene).
+
+on:
+  workflow_call:
+    inputs:
+      dev-env-var:
+        description: "Dev gate env var (e.g. ADF_DEV) that activates the lint/build plugins."
+        required: true
+        type: string
+      swift-version:
+        required: false
+        type: string
+        default: "6.3.2"
+      enable-coverage:
+        required: false
+        type: boolean
+        default: true
+      strict-tags:
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  quality:
+    name: lint • build • test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Checkout ADBuildTools (canonical config + scripts)
+        uses: actions/checkout@v4
+        with:
+          repository: g-cqd/ADBuildTools
+          ref: v1
+          path: .adbuildtools
+      - name: Install Swift ${{ inputs.swift-version }}
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: ${{ inputs.swift-version }}
+      - name: Config drift check (.swift-format == canonical)
+        shell: bash
+        run: |
+          if ! diff -u .adbuildtools/.swift-format .swift-format; then
+            echo "::error::.swift-format drifted from canonical ADBuildTools config — run scripts/sync-config.sh"
+            exit 1
+          fi
+      - name: Lint (format gate + shipped-library discipline)
+        shell: bash
+        run: ${{ inputs.dev-env-var }}=1 swift package lint
+      - name: Internal-tag check
+        if: ${{ inputs.strict-tags }}
+        shell: bash
+        run: STRICT_TAGS=1 .adbuildtools/scripts/check-tags.sh all
+      - name: Build
+        shell: bash
+        run: ${{ inputs.dev-env-var }}=1 swift build
+      - name: Test
+        shell: bash
+        run: |
+          if [ "${{ inputs.enable-coverage }}" = "true" ]; then
+            ${{ inputs.dev-env-var }}=1 swift test --enable-code-coverage
+          else
+            ${{ inputs.dev-env-var }}=1 swift test
+          fi
