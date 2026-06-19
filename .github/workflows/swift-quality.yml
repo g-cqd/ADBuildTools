@@ -20,9 +20,11 @@ on:
         required: true
         type: string
       swift-version:
+        # Tracks the AD-family's pinned toolchain (locally `TOOLCHAINS=swiftlatest`, a Swift 6.4
+        # snapshot). A consumer whose runner cannot install 6.4 from `setup-swift` overrides this.
         required: false
         type: string
-        default: "6.3.2"
+        default: "6.4"
       enable-coverage:
         required: false
         type: boolean
@@ -78,3 +80,28 @@ jobs:
           else
             ${{ inputs.dev-env-var }}=1 swift test
           fi
+
+  # Sanitizer lane: the seeded fuzz / crash-injection and differential-oracle (parity) suites — the
+  # ones now built on the shared ADTestKit (`fuzzNeverTraps`, `ByteMutator`, the `ReferenceComparison`
+  # oracles) plus the kit's own self-tests when this workflow runs for ADTestKit — are the highest-value
+  # targets for a memory/UB sanitizer. Runs the full suite under AddressSanitizer on the 6.4 toolchain;
+  # a trap / OOB the fuzzers can provoke fails here even when the default lane stays green.
+  sanitizer:
+    name: sanitizer (fuzz • parity)
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Checkout ADBuildTools (canonical config + scripts)
+        uses: actions/checkout@v4
+        with:
+          repository: g-cqd/ADBuildTools
+          ref: v1
+          path: .adbuildtools
+      - name: Install Swift ${{ inputs.swift-version }}
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: ${{ inputs.swift-version }}
+      - name: Test under AddressSanitizer
+        shell: bash
+        run: ${{ inputs.dev-env-var }}=1 swift test --sanitize=address
