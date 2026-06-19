@@ -59,6 +59,11 @@ struct LintPlugin: CommandPlugin {
             failed = true
         }
 
+        // 3. Test-tree discipline (AD-family Phase 6): no inline PRNG re-rolls, untyped `#expect(throws:)`,
+        //    or wall-clock assertions in the test tree. Each is gated by a `.adbuildtools.json` toggle and
+        //    a per-line `// lint:allow` escape.
+        if scanTestTreeDiscipline(root: root, settings: settings) { failed = true }
+
         // Throw (not merely diagnose) so the command exits non-zero and actually fails the hook / CI.
         if failed { throw LintError.failed }
         print("lint clean")
@@ -124,6 +129,62 @@ struct LintPlugin: CommandPlugin {
         }
         return found
     }
+
+    /// Scans the package's `Tests/` tree for the AD-family's test-discipline bans (Phase 6), modeled on
+    /// the grep-based `scanForbiddenStrtod`:
+    ///   - **inline PRNG re-rolls** (`struct SplitMix64` / `struct LCG`) — use `ADTestKit.SeededRNG`;
+    ///   - **untyped `#expect(throws:)`** (`(any Error).self` / `Error.self`) — use the kit's
+    ///     `expectThrows(_:where:)` with a concrete error type and payload predicate;
+    ///   - **wall-clock assertions** (`#expect`/`#require` over `DispatchTime` / `ContinuousClock` /
+    ///     `Date` elapsed) — assert allocation / op counts, or quarantine with
+    ///     `withKnownIssue(isIntermittent:)`.
+    /// Each category is gated by a `.adbuildtools.json` toggle (default on) and a per-line `// lint:allow`
+    /// escape. Returns true if any un-annotated violation is found (each reported as a diagnostic).
+    private func scanTestTreeDiscipline(root: URL, settings: LintSettings) -> Bool {
+        guard settings.prngBan || settings.untypedThrowsBan || settings.wallClockBan else { return false }
+        let tests = root.appending(path: "Tests")
+        guard FileManager.default.fileExists(atPath: tests.path),
+            let walker = FileManager.default.enumerator(at: tests, includingPropertiesForKeys: nil)
+        else { return false }
+        let wallClockTokens = [
+            "DispatchTime", "ContinuousClock", "SuspendingClock", ".timeIntervalSince", ".uptimeNanoseconds"
+        ]
+        var found = false
+        while let file = walker.nextObject() as? URL {
+            guard file.pathExtension == "swift",
+                let text = try? String(contentsOf: file, encoding: .utf8)
+            else { continue }
+            for (offset, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+                // A reviewed exception opts out with a trailing `// lint:allow` marker.
+                if line.contains("lint:allow") { continue }
+                let loc = "\(file.lastPathComponent):\(offset + 1)"
+                if settings.prngBan, line.contains("struct SplitMix64") || line.contains("struct LCG") {
+                    Diagnostics.error(
+                        "\(loc): inline PRNG re-roll is banned in tests — use ADTestKit.SeededRNG "
+                            + "(annotate a reviewed case with // lint:allow)")
+                    found = true
+                }
+                if settings.untypedThrowsBan,
+                    line.contains("#expect(throws: (any Error).self)")
+                        || line.contains("#expect(throws: Error.self)")
+                {
+                    Diagnostics.error(
+                        "\(loc): untyped #expect(throws:) is banned in tests — use "
+                            + "ADTestKit.expectThrows(_:where:) with a concrete error type (// lint:allow to opt out)")
+                    found = true
+                }
+                if settings.wallClockBan, line.contains("#expect(") || line.contains("#require("),
+                    wallClockTokens.contains(where: { line.contains($0) })
+                {
+                    Diagnostics.error(
+                        "\(loc): wall-clock assertion is banned in tests — assert allocations/op-counts or "
+                            + "quarantine with withKnownIssue(isIntermittent:) (// lint:allow to opt out)")
+                    found = true
+                }
+            }
+        }
+        return found
+    }
 }
 
 /// Consumer-specific lint configuration, read from `.adbuildtools.json` with safe defaults.
@@ -133,6 +194,11 @@ private struct LintSettings {
     /// The shipped force-unwrap / force-try AST pass. Defaults on; a repo whose force-unwrap cleanup is
     /// still staged sets this `false` in `.adbuildtools.json` to adopt the rest of the standard now.
     let forceUnwrapBan: Bool
+    /// Test-tree discipline toggles (Phase 6), each default on. A repo opts a category out in
+    /// `.adbuildtools.json` (e.g. `"wallClockBan": false`) while still adopting the rest.
+    let prngBan: Bool
+    let untypedThrowsBan: Bool
+    let wallClockBan: Bool
 
     init(root: URL) {
         let file = root.appending(path: ".adbuildtools.json")
@@ -142,6 +208,9 @@ private struct LintSettings {
         shippedTargets = (json?["shippedTargets"] as? [String]) ?? ["Sources"]
         strtodBan = (json?["strtodBan"] as? Bool) ?? true
         forceUnwrapBan = (json?["forceUnwrapBan"] as? Bool) ?? true
+        prngBan = (json?["prngBan"] as? Bool) ?? true
+        untypedThrowsBan = (json?["untypedThrowsBan"] as? Bool) ?? true
+        wallClockBan = (json?["wallClockBan"] as? Bool) ?? true
     }
 }
 
