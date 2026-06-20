@@ -37,7 +37,10 @@ on:
         description: "Canonical Linux toolchain image."
         required: false
         type: string
-        default: "swiftlang/swift:nightly-6.4-jammy"
+        # Dated nightly pins the toolchain for reproducible CI: the moving `nightly-6.4-jammy` tag
+        # drifts daily (the root of the #14 stale-incremental build flakes). Bump this deliberately,
+        # like any other dependency, after verifying the new snapshot is green.
+        default: "swiftlang/swift:nightly-6.4-2026-06-18-jammy"
       macos-runner:
         required: false
         type: string
@@ -103,13 +106,13 @@ jobs:
         run: .adbuildtools/scripts/check-manifest-settings.sh Package.swift
       - name: SwiftLint metrics (size / complexity)
         # swift-format cannot express file-length / cyclomatic-complexity; SwiftLint adds ONLY those
-        # metrics (see .swiftlint.yml). NON-BLOCKING during the warning-mode roll-out — annotates the
-        # backlog without failing CI. Flip to enforcing (drop continue-on-error, add --strict) after WS3.
-        continue-on-error: true
+        # metrics (see .swiftlint.yml). ENFORCING (WS3 complete): `--strict` promotes every metric
+        # warning to a failure and the step is blocking (no continue-on-error). A reviewed large-legacy
+        # file opts out with an in-file `// swiftlint:disable <rule>` + TODO, never by relaxing the gate.
         shell: bash
         run: |
           brew list swiftlint >/dev/null 2>&1 || brew install swiftlint
-          swiftlint lint --config .swiftlint.yml --reporter github-actions-logging
+          swiftlint lint --strict --config .swiftlint.yml --reporter github-actions-logging
       - name: Lint (format gate + shipped-library discipline)
         # `swift package lint` runs the ADBuildTools plugin, which resolves the package graph — so it is
         # gated on published siblings. The file-based gates above always run.

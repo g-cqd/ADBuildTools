@@ -36,6 +36,12 @@ struct LintPlugin: CommandPlugin {
             failed = true
         }
 
+        // 1b. Size/complexity metrics gate — SwiftLint `--strict` over the synced `.swiftlint.yml`
+        //     (file/type/function length, cyclomatic complexity, arity, nesting — the metrics
+        //     swift-format cannot express). Mirrors the reusable `swift-quality.yml` CI step so local
+        //     `swift package lint` and CI agree; enforcing, so any metric warning fails.
+        if runSwiftLintMetrics(root: root) != 0 { failed = true }
+
         // 2a. Force-unwrap / force-try discipline — AST-based, scoped to the shipped library targets. The
         //     config is the consumer `.swift-format` with `NeverForceUnwrap` + `NeverUseForceTry` switched
         //     on, so the rule set never drifts from the checked-in config and there are no defaults-driven
@@ -80,6 +86,33 @@ struct LintPlugin: CommandPlugin {
             return 1
         }
         process.waitUntilExit()
+        return process.terminationStatus
+    }
+
+    /// Runs the SwiftLint size/complexity metrics gate (`--strict`) over the package's synced
+    /// `.swiftlint.yml`, matching the reusable `swift-quality.yml` CI step so local `swift package lint`
+    /// and CI agree. SwiftLint is a system binary (Homebrew), not a toolchain tool, so it's resolved off
+    /// `PATH` via `/usr/bin/env`; the plugin therefore execs an external tool and must be run with
+    /// `--disable-sandbox`. A package without a `.swiftlint.yml` skips; a missing `swiftlint` binary is a
+    /// hard failure (the gate must not silently pass).
+    private func runSwiftLintMetrics(root: URL) -> Int32 {
+        guard FileManager.default.fileExists(atPath: root.appending(path: ".swiftlint.yml").path) else {
+            return 0
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["swiftlint", "lint", "--strict", "--config", ".swiftlint.yml"]
+        process.currentDirectoryURL = root
+        do {
+            try process.run()
+        } catch {
+            Diagnostics.error("could not launch swiftlint — install it with `brew install swiftlint`")
+            return 1
+        }
+        process.waitUntilExit()
+        if process.terminationStatus == 127 {
+            Diagnostics.error("swiftlint not found on PATH — install it with `brew install swiftlint`")
+        }
         return process.terminationStatus
     }
 
