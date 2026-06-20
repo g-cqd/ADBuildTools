@@ -17,6 +17,16 @@ if [ -n "$dev" ]; then export "$dev=1"; fi
 echo "pre-commit: swift package lint"
 swift package lint
 
+# SwiftLint size/complexity metrics (swift-format can't express file-length / cyclomatic-complexity).
+# Non-blocking during the initial warning-mode roll-out — reports the backlog without blocking the
+# commit. Drop the `|| true` to enforce once WS3 clears the outliers. Needs the `swiftlint` binary.
+if command -v swiftlint >/dev/null 2>&1; then
+    echo "pre-commit: swiftlint (size/complexity metrics)"
+    swiftlint lint --quiet --config .swiftlint.yml || true
+else
+    echo "pre-commit: swiftlint not found — skipping metrics gate (install: brew install swiftlint)"
+fi
+
 # Block newly added TODO/FIXME and internal provenance citations. Diff-based, so it only flags regressions.
 if [ -x "$(dirname "$0")/check-tags.sh" ]; then
     echo "pre-commit: internal-tag check (staged)"

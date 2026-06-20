@@ -1,16 +1,30 @@
 name: Swift Quality
 
-# Reusable workflow: the single CI definition for every g-cqd Swift package.
-# A consumer calls it from its own .github/workflows/ci.yml:
+# Reusable workflow — the SINGLE CI definition for every g-cqd Swift package ("full adopt" model).
+# A consumer's .github/workflows/ci.yml is a thin caller:
 #
 #   jobs:
 #     quality:
 #       uses: g-cqd/ADBuildTools/.github/workflows/swift-quality.yml@v1
 #       with:
 #         dev-env-var: ADF_DEV
+#         requires-published-siblings: true   # set when the package has first-party AD-family deps
+#         enable-sanitizers: true
+#         sanitizers: "address thread"
+#         enable-docs: true
+#         docs-target: ADFoundation
 #
-# NOTE: action `uses:` are tag-pinned below for readability — pin them to commit SHAs before
-# relying on this in production (OWASP A03 supply-chain hygiene).
+# This workflow owns the COMMON gate + build/test/sanitizer/docs. Package-UNIQUE jobs (ADFoundation's
+# tier-isolation invariant, the ordo-one benchmark suites, ADJSON's NIO/fuzz legs) stay in a separate
+# per-package workflow that runs alongside this one.
+#
+# Canonical toolchain: the family's pinned 6.4 nightly Linux image; macOS uses the runner's Swift.
+# File-based gates (format/metrics/drift/tags) always run; anything needing SwiftPM resolution
+# (`swift package lint`, build, test, sanitizers, docs) is gated on AD_SWIFT_SIBLINGS_PUBLISHED for
+# packages whose first-party siblings resolve from `branch: main` and may not be published yet.
+#
+# NOTE: action `uses:` are tag-pinned for readability — pin to commit SHAs before production
+# (OWASP A03 supply-chain hygiene). Offline-authored; the first real-runner run may need a tweak.
 
 on:
   workflow_call:
@@ -19,12 +33,15 @@ on:
         description: "Dev gate env var (e.g. ADF_DEV) that activates the lint/build plugins."
         required: true
         type: string
-      swift-version:
-        # Tracks the AD-family's pinned toolchain (locally `TOOLCHAINS=swiftlatest`, a Swift 6.4
-        # snapshot). A consumer whose runner cannot install 6.4 from `setup-swift` overrides this.
+      container-image:
+        description: "Canonical Linux toolchain image."
         required: false
         type: string
-        default: "6.4"
+        default: "swiftlang/swift:nightly-6.4-jammy"
+      macos-runner:
+        required: false
+        type: string
+        default: "macos-15"
       enable-coverage:
         required: false
         type: boolean
@@ -33,75 +50,140 @@ on:
         required: false
         type: boolean
         default: true
+      requires-published-siblings:
+        description: "Gate resolution-dependent jobs on the AD_SWIFT_SIBLINGS_PUBLISHED repo var."
+        required: false
+        type: boolean
+        default: false
+      enable-sanitizers:
+        required: false
+        type: boolean
+        default: false
+      sanitizers:
+        description: "Space-separated sanitizer list, e.g. 'address thread'."
+        required: false
+        type: string
+        default: "address"
+      enable-docs:
+        required: false
+        type: boolean
+        default: false
+      docs-target:
+        description: "DocC target name (required when enable-docs is true)."
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
 
 jobs:
-  quality:
-    name: lint • build • test
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-15, ubuntu-latest]
-    runs-on: ${{ matrix.os }}
+  gate:
+    name: gate (format • discipline • metrics • drift)
+    runs-on: ${{ inputs.macos-runner }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
       - name: Checkout ADBuildTools (canonical config + scripts)
         uses: actions/checkout@v4
         with:
           repository: g-cqd/ADBuildTools
           ref: v1
           path: .adbuildtools
-      - name: Install Swift ${{ inputs.swift-version }}
-        uses: swift-actions/setup-swift@v2
-        with:
-          swift-version: ${{ inputs.swift-version }}
-      - name: Config drift check (.swift-format == canonical)
+      - name: Config drift (.swift-format + .swiftlint.yml == canonical)
         shell: bash
         run: |
-          if ! diff -u .adbuildtools/.swift-format .swift-format; then
-            echo "::error::.swift-format drifted from canonical ADBuildTools config — run scripts/sync-config.sh"
-            exit 1
-          fi
+          fail=0
+          diff -u .adbuildtools/.swift-format .swift-format \
+            || { echo "::error::.swift-format drifted from canonical — run scripts/sync-config.sh"; fail=1; }
+          diff -u .adbuildtools/.swiftlint.yml .swiftlint.yml \
+            || { echo "::error::.swiftlint.yml drifted from canonical — run scripts/sync-config.sh"; fail=1; }
+          exit $fail
+      - name: Manifest settings drift (canonical swiftSettings present)
+        shell: bash
+        run: .adbuildtools/scripts/check-manifest-settings.sh Package.swift
+      - name: SwiftLint metrics (size / complexity)
+        # swift-format cannot express file-length / cyclomatic-complexity; SwiftLint adds ONLY those
+        # metrics (see .swiftlint.yml). NON-BLOCKING during the warning-mode roll-out — annotates the
+        # backlog without failing CI. Flip to enforcing (drop continue-on-error, add --strict) after WS3.
+        continue-on-error: true
+        shell: bash
+        run: |
+          brew list swiftlint >/dev/null 2>&1 || brew install swiftlint
+          swiftlint lint --config .swiftlint.yml --reporter github-actions-logging
       - name: Lint (format gate + shipped-library discipline)
+        # `swift package lint` runs the ADBuildTools plugin, which resolves the package graph — so it is
+        # gated on published siblings. The file-based gates above always run.
+        if: ${{ !inputs.requires-published-siblings || vars.AD_SWIFT_SIBLINGS_PUBLISHED == 'true' }}
         shell: bash
         run: ${{ inputs.dev-env-var }}=1 swift package lint
       - name: Internal-tag check
         if: ${{ inputs.strict-tags }}
         shell: bash
         run: STRICT_TAGS=1 .adbuildtools/scripts/check-tags.sh all
+
+  test-macos:
+    name: macOS (${{ matrix.config }})
+    if: ${{ !inputs.requires-published-siblings || vars.AD_SWIFT_SIBLINGS_PUBLISHED == 'true' }}
+    runs-on: ${{ inputs.macos-runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [debug, release]
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift --version
       - name: Build
-        shell: bash
-        run: ${{ inputs.dev-env-var }}=1 swift build
+        run: ${{ inputs.dev-env-var }}=1 swift build -c ${{ matrix.config }}
       - name: Test
         shell: bash
         run: |
-          if [ "${{ inputs.enable-coverage }}" = "true" ]; then
-            ${{ inputs.dev-env-var }}=1 swift test --enable-code-coverage
+          if [ "${{ inputs.enable-coverage }}" = "true" ] && [ "${{ matrix.config }}" = "debug" ]; then
+            ${{ inputs.dev-env-var }}=1 swift test -c debug --enable-code-coverage
           else
-            ${{ inputs.dev-env-var }}=1 swift test
+            ${{ inputs.dev-env-var }}=1 swift test -c ${{ matrix.config }}
           fi
 
-  # Sanitizer lane: the seeded fuzz / crash-injection and differential-oracle (parity) suites — the
-  # ones now built on the shared ADTestKit (`fuzzNeverTraps`, `ByteMutator`, the `ReferenceComparison`
-  # oracles) plus the kit's own self-tests when this workflow runs for ADTestKit — are the highest-value
-  # targets for a memory/UB sanitizer. Runs the full suite under AddressSanitizer on the 6.4 toolchain;
-  # a trap / OOB the fuzzers can provoke fails here even when the default lane stays green.
-  sanitizer:
-    name: sanitizer (fuzz • parity)
-    runs-on: macos-15
+  test-linux:
+    name: Linux (${{ matrix.config }})
+    if: ${{ !inputs.requires-published-siblings || vars.AD_SWIFT_SIBLINGS_PUBLISHED == 'true' }}
+    runs-on: ubuntu-latest
+    container: ${{ inputs.container-image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [debug, release]
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Checkout ADBuildTools (canonical config + scripts)
-        uses: actions/checkout@v4
-        with:
-          repository: g-cqd/ADBuildTools
-          ref: v1
-          path: .adbuildtools
-      - name: Install Swift ${{ inputs.swift-version }}
-        uses: swift-actions/setup-swift@v2
-        with:
-          swift-version: ${{ inputs.swift-version }}
-      - name: Test under AddressSanitizer
+      - uses: actions/checkout@v4
+      - run: swift --version
+      - name: Build
+        run: ${{ inputs.dev-env-var }}=1 swift build -c ${{ matrix.config }}
+      - name: Test
+        run: ${{ inputs.dev-env-var }}=1 swift test -c ${{ matrix.config }}
+
+  sanitizers:
+    name: sanitizers
+    if: ${{ inputs.enable-sanitizers && (!inputs.requires-published-siblings || vars.AD_SWIFT_SIBLINGS_PUBLISHED == 'true') }}
+    runs-on: ${{ inputs.macos-runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test under each sanitizer
         shell: bash
-        run: ${{ inputs.dev-env-var }}=1 swift test --sanitize=address
+        run: |
+          for s in ${{ inputs.sanitizers }}; do
+            echo "::group::sanitizer=$s"
+            ${{ inputs.dev-env-var }}=1 swift test --sanitize="$s"
+            echo "::endgroup::"
+          done
+
+  docs:
+    name: Documentation (DocC)
+    if: ${{ inputs.enable-docs && (!inputs.requires-published-siblings || vars.AD_SWIFT_SIBLINGS_PUBLISHED == 'true') }}
+    runs-on: ubuntu-latest
+    container: ${{ inputs.container-image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate documentation
+        shell: bash
+        run: |
+          ${{ inputs.dev-env-var }}=1 swift package --allow-writing-to-directory ./docs \
+            generate-documentation --target ${{ inputs.docs-target }} --output-path ./docs
