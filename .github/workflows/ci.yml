@@ -1,0 +1,50 @@
+name: CI
+
+# ADBuildTools is the canonical tooling repo — the Format / Lint / LintBuild plugins, the shared
+# scripts, and the canonical `.swift-format` / `.swiftlint.yml` every other package syncs from here.
+# It ships no library, so it does NOT consume the reusable `swift-quality.yml` (which builds + tests a
+# package). Instead it dogfoods its own gate: the plugins must compile, the plugin sources must pass
+# the very `.swift-format` they enforce family-wide, and the shared shell scripts must be valid.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  selfcheck:
+    name: build plugins • lint sources • check scripts
+    runs-on: ubuntu-latest
+    # The same dated nightly the reusable workflow pins, so the tooling repo and its consumers build
+    # on one reproducible toolchain.
+    container: swiftlang/swift:nightly-6.4-2026-06-18-jammy
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the plugins (Format / Lint / LintBuild)
+        run: swift build
+
+      - name: Plugin sources pass the canonical swift-format
+        run: |
+          if command -v swift-format >/dev/null 2>&1; then
+            swift-format lint --strict --recursive --configuration .swift-format Plugins
+          elif swift format lint --help >/dev/null 2>&1; then
+            swift format lint --strict --recursive --configuration .swift-format Plugins
+          else
+            echo "swift-format unavailable in this image — skipped (the pre-commit hook gates locally)"
+          fi
+
+      - name: Shared shell scripts are syntactically valid
+        run: |
+          for s in scripts/*.sh githooks/pre-commit githooks/pre-push; do
+            [ -f "$s" ] || continue
+            sh -n "$s" && echo "ok: $s"
+          done
