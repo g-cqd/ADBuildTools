@@ -98,6 +98,14 @@ on:
         required: false
         type: string
         default: ""
+      homebrew-packages:
+        description: >-
+          Space-separated Homebrew formulae to install on the macOS build/test/sanitizer legs
+          (e.g. 'jemalloc' for packages whose dev graph pulls ordo-one package-benchmark's
+          malloc-stats module). The Linux analogue is system-packages. Empty = none.
+        required: false
+        type: string
+        default: ""
       fixtures-command:
         description: >-
           A shell command run (in the package root) before build/test on BOTH platforms to
@@ -175,6 +183,13 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Install Swift 6.4 dev toolchain (no hosted macOS image ships 6.4)
         uses: g-cqd/ADBuildTools/.github/actions/setup-swift@v1
+      - name: Install Homebrew packages
+        if: ${{ inputs.homebrew-packages != '' }}
+        shell: bash
+        run: |
+          for f in ${{ inputs.homebrew-packages }}; do
+            brew list "$f" >/dev/null 2>&1 || brew install "$f"
+          done
       - run: swift --version
       - name: Fetch fixtures
         if: ${{ inputs.fixtures-command != '' }}
@@ -236,6 +251,13 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Install Swift 6.4 dev toolchain (no hosted macOS image ships 6.4)
         uses: g-cqd/ADBuildTools/.github/actions/setup-swift@v1
+      - name: Install Homebrew packages
+        if: ${{ inputs.homebrew-packages != '' }}
+        shell: bash
+        run: |
+          for f in ${{ inputs.homebrew-packages }}; do
+            brew list "$f" >/dev/null 2>&1 || brew install "$f"
+          done
       - name: Test under each sanitizer
         shell: bash
         run: |
