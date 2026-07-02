@@ -12,6 +12,12 @@ import PackageDescription
 // the plugins via `.plugin(name:package:)`, so the lint logic lives in exactly one place. The canonical
 // `.swift-format` at this package's root is the authority; `scripts/sync-config.sh` copies it into a
 // consumer and the reusable CI workflow fails on drift.
+//
+// Benchmarks: intentionally NONE. Every sibling package carries an ordo-one `package-benchmark` suite,
+// but ADBuildTools has no runtime library — only build-time/command plugins that shell out to
+// `swift format`/SwiftLint plus shell scripts. ordo measures in-process runtime hot paths; a plugin
+// whose cost is an external subprocess has nothing meaningful to sample, so a benchmark target here
+// would be noise. (Re-evaluate only if a runtime library target is ever added.)
 let package = Package(
     name: "ADBuildTools",
     products: [
