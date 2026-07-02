@@ -40,10 +40,10 @@ on:
         description: "Canonical Linux toolchain image."
         required: false
         type: string
-        # Dated nightly pins the toolchain for reproducible CI: the moving `nightly-6.4-jammy` tag
+        # Dated nightly pins the toolchain for reproducible CI: the moving `nightly-6.4.x-noble` tag
         # drifts daily (the root of the #14 stale-incremental build flakes). Bump this deliberately,
         # like any other dependency, after verifying the new snapshot is green.
-        default: "swiftlang/swift:nightly-6.4-2026-06-18-jammy"
+        default: "swiftlang/swift:nightly-6.4.x-noble@sha256:54970846d48a8255eee5986aa5bbd259b7f73bbf38429cc2428ce6a62a390b47"
       macos-runner:
         required: false
         type: string

@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     # The same dated nightly the reusable workflow pins, so the tooling repo and its consumers build
     # on one reproducible toolchain.
-    container: swiftlang/swift:nightly-6.4-2026-06-18-jammy
+    container: swiftlang/swift:nightly-6.4.x-noble@sha256:54970846d48a8255eee5986aa5bbd259b7f73bbf38429cc2428ce6a62a390b47
     steps:
       - uses: actions/checkout@v4
 
