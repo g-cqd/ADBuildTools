@@ -152,9 +152,12 @@ jobs:
         # gated on published siblings. The file-based gates above always run.
         if: ${{ !inputs.requires-published-siblings || vars.AD_SWIFT_SIBLINGS_PUBLISHED == 'true' }}
         shell: bash
+        # `--disable-sandbox` is REQUIRED by the Lint plugin (documented on runSwiftLintMetrics): it
+        # execs the Homebrew `swiftlint`, whose cache write the plugin sandbox denies — the run dies
+        # with a bare "error: lint failed" AFTER all checks pass. Same flag apple-docs' caller uses.
         run: |
           BS=""; [ -n "${{ inputs.build-system }}" ] && BS="--build-system ${{ inputs.build-system }}"
-          ${{ inputs.dev-env-var }}=1 swift package $BS lint
+          ${{ inputs.dev-env-var }}=1 swift package $BS --disable-sandbox lint
       - name: Internal-tag check
         if: ${{ inputs.strict-tags }}
         shell: bash
