@@ -23,8 +23,11 @@ name: Swift Quality
 # (`swift package lint`, build, test, sanitizers, docs) is gated on AD_SWIFT_SIBLINGS_PUBLISHED for
 # packages whose first-party siblings resolve from `branch: main` and may not be published yet.
 #
-# NOTE: action `uses:` are tag-pinned for readability — pin to commit SHAs before production
-# (OWASP A03 supply-chain hygiene). Offline-authored; the first real-runner run may need a tweak.
+# Supply-chain hygiene (OWASP A03): third-party actions (`actions/checkout`) are pinned to a commit
+# SHA with the human-readable tag in a trailing comment; bump the SHA deliberately like a dependency.
+# First-party `g-cqd/ADBuildTools` self-references stay on the `@v1`/`ref: v1` tag — that IS the
+# consumer-facing version contract for this reusable workflow. Offline-authored; the first real-runner
+# run may need a tweak.
 
 on:
   workflow_call:
@@ -76,6 +79,28 @@ on:
         required: false
         type: string
         default: ""
+      build-system:
+        description: >-
+          SwiftPM build-system engine to force on every swift build/test/package command
+          (e.g. 'native' for packages with a .macro target hit by the swiftbuild macro/test-link
+          bug — ADHTML, see its ADR-0008). Empty = the toolchain default.
+        required: false
+        type: string
+        default: ""
+      system-packages:
+        description: >-
+          Space-separated apt packages to install in the Linux container before build/test
+          (e.g. 'libsqlite3-dev' for ADDB). Linux-only; macOS ships these in its SDK. Empty = none.
+        required: false
+        type: string
+        default: ""
+      fixtures-command:
+        description: >-
+          A shell command run (in the package root) before build/test on BOTH platforms to
+          materialize test fixtures (e.g. ADJSON's fetch-fixtures). Empty = no fixtures step.
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -85,9 +110,9 @@ jobs:
     name: gate (format • discipline • metrics • drift)
     runs-on: ${{ inputs.macos-runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Checkout ADBuildTools (canonical config + scripts)
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: g-cqd/ADBuildTools
           ref: v1
@@ -118,7 +143,9 @@ jobs:
         # gated on published siblings. The file-based gates above always run.
         if: ${{ !inputs.requires-published-siblings || vars.AD_SWIFT_SIBLINGS_PUBLISHED == 'true' }}
         shell: bash
-        run: ${{ inputs.dev-env-var }}=1 swift package lint
+        run: |
+          BS=""; [ -n "${{ inputs.build-system }}" ] && BS="--build-system ${{ inputs.build-system }}"
+          ${{ inputs.dev-env-var }}=1 swift package $BS lint
       - name: Internal-tag check
         if: ${{ inputs.strict-tags }}
         shell: bash
@@ -133,17 +160,25 @@ jobs:
       matrix:
         config: [debug, release]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - run: swift --version
+      - name: Fetch fixtures
+        if: ${{ inputs.fixtures-command != '' }}
+        shell: bash
+        run: ${{ inputs.fixtures-command }}
       - name: Build
-        run: ${{ inputs.dev-env-var }}=1 swift build -c ${{ matrix.config }}
+        shell: bash
+        run: |
+          BS=""; [ -n "${{ inputs.build-system }}" ] && BS="--build-system ${{ inputs.build-system }}"
+          ${{ inputs.dev-env-var }}=1 swift build $BS -c ${{ matrix.config }}
       - name: Test
         shell: bash
         run: |
+          BS=""; [ -n "${{ inputs.build-system }}" ] && BS="--build-system ${{ inputs.build-system }}"
           if [ "${{ inputs.enable-coverage }}" = "true" ] && [ "${{ matrix.config }}" = "debug" ]; then
-            ${{ inputs.dev-env-var }}=1 swift test -c debug --enable-code-coverage
+            ${{ inputs.dev-env-var }}=1 swift test $BS -c debug --enable-code-coverage
           else
-            ${{ inputs.dev-env-var }}=1 swift test -c ${{ matrix.config }}
+            ${{ inputs.dev-env-var }}=1 swift test $BS -c ${{ matrix.config }}
           fi
 
   test-linux:
@@ -156,25 +191,42 @@ jobs:
       matrix:
         config: [debug, release]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - run: swift --version
+      - name: Install system packages
+        if: ${{ inputs.system-packages != '' }}
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ${{ inputs.system-packages }}
+      - name: Fetch fixtures
+        if: ${{ inputs.fixtures-command != '' }}
+        shell: bash
+        run: ${{ inputs.fixtures-command }}
       - name: Build
-        run: ${{ inputs.dev-env-var }}=1 swift build -c ${{ matrix.config }}
+        shell: bash
+        run: |
+          BS=""; [ -n "${{ inputs.build-system }}" ] && BS="--build-system ${{ inputs.build-system }}"
+          ${{ inputs.dev-env-var }}=1 swift build $BS -c ${{ matrix.config }}
       - name: Test
-        run: ${{ inputs.dev-env-var }}=1 swift test -c ${{ matrix.config }}
+        shell: bash
+        run: |
+          BS=""; [ -n "${{ inputs.build-system }}" ] && BS="--build-system ${{ inputs.build-system }}"
+          ${{ inputs.dev-env-var }}=1 swift test $BS -c ${{ matrix.config }}
 
   sanitizers:
     name: sanitizers
     if: ${{ inputs.enable-sanitizers && (!inputs.requires-published-siblings || vars.AD_SWIFT_SIBLINGS_PUBLISHED == 'true') }}
     runs-on: ${{ inputs.macos-runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Test under each sanitizer
         shell: bash
         run: |
+          BS=""; [ -n "${{ inputs.build-system }}" ] && BS="--build-system ${{ inputs.build-system }}"
           for s in ${{ inputs.sanitizers }}; do
             echo "::group::sanitizer=$s"
-            ${{ inputs.dev-env-var }}=1 swift test --sanitize="$s"
+            ${{ inputs.dev-env-var }}=1 swift test $BS --sanitize="$s"
             echo "::endgroup::"
           done
 
@@ -184,9 +236,16 @@ jobs:
     runs-on: ubuntu-latest
     container: ${{ inputs.container-image }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install system packages
+        if: ${{ inputs.system-packages != '' }}
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ${{ inputs.system-packages }}
       - name: Generate documentation
         shell: bash
         run: |
-          ${{ inputs.dev-env-var }}=1 swift package --allow-writing-to-directory ./docs \
+          BS=""; [ -n "${{ inputs.build-system }}" ] && BS="--build-system ${{ inputs.build-system }}"
+          ${{ inputs.dev-env-var }}=1 swift package $BS --allow-writing-to-directory ./docs \
             generate-documentation --target ${{ inputs.docs-target }} --output-path ./docs
