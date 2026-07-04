@@ -113,6 +113,15 @@ on:
         required: false
         type: string
         default: ""
+      linux-release-advisory:
+        description: >-
+          Mark the Linux release-mode test leg advisory (continue-on-error). For a package that hits
+          a nightly-Linux-toolchain release-mode teardown crash — all tests pass, then the process
+          segfaults on exit — while no stable 6.4 Linux toolchain has shipped. The Linux debug leg and
+          both macOS legs stay required. Default false (the release leg gates).
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -224,6 +233,9 @@ jobs:
     if: ${{ !inputs.requires-published-siblings || vars.AD_SWIFT_SIBLINGS_PUBLISHED == 'true' }}
     runs-on: ubuntu-latest
     container: ${{ inputs.container-image }}
+    # Opt-in advisory, release leg only: a nightly-Linux-toolchain release-mode teardown crash (tests
+    # pass, the process segfaults on exit). Debug stays required, so a real Linux regression still gates.
+    continue-on-error: ${{ inputs.linux-release-advisory && matrix.config == 'release' }}
     strategy:
       fail-fast: false
       matrix:
